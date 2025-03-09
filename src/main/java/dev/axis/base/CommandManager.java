@@ -9,12 +9,9 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.SimpleCommandMap;
 import org.bukkit.command.defaults.BukkitCommand;
 import org.bukkit.entity.Player;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.SimplePluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.reflections.Reflections;
-import org.reflections.scanners.Scanners;
-import org.reflections.util.ClasspathHelper;
-import org.reflections.util.ConfigurationBuilder;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -26,70 +23,61 @@ public class CommandManager {
   private static final Map<String, BukkitCommand> commands = new HashMap<>();
   private static SimpleCommandMap commandMap;
 
-  public static void registerCommands(JavaPlugin plugin) {
+  public static void registerCommand(JavaPlugin plugin, Object instance) {
     try {
-      commandMap = getCommandMap();
-      Reflections reflections = new Reflections(new ConfigurationBuilder()
-              .setUrls(ClasspathHelper.forPackage(plugin.getClass().getPackage().getName()))
-              .setScanners(Scanners.TypesAnnotated));
-      Set<Class<?>> commandClasses = reflections.getTypesAnnotatedWith(Command.class);
-
-      for (Class<?> clazz : commandClasses) {
-        registerCommand(plugin, clazz);
+      if (commandMap == null) {
+        Field field = SimplePluginManager.class.getDeclaredField("commandMap");
+        field.setAccessible(true);
+        commandMap = (SimpleCommandMap) field.get(Bukkit.getPluginManager());
       }
-    } catch (Exception e) {
-      plugin.getLogger().severe("[SANCF] Failed to register commands: " + e.getMessage());
-      e.printStackTrace();
-    }
-  }
 
-  private static SimpleCommandMap getCommandMap() throws Exception {
-    if (commandMap == null) {
-      Field field = SimplePluginManager.class.getDeclaredField("commandMap");
-      field.setAccessible(true);
-      commandMap = (SimpleCommandMap) field.get(Bukkit.getPluginManager());
-    }
-    return commandMap;
-  }
+      Class<?> clazz = instance.getClass();
+      if (!clazz.isAnnotationPresent(Command.class)) {
+        plugin.getLogger().warning("[SANCF] Class " + clazz.getName() + " is not annotated with @Command");
+        return;
+      }
 
-  private static void registerCommand(JavaPlugin plugin, Class<?> clazz) throws Exception {
-    Command commandInfo = clazz.getAnnotation(Command.class);
-    Object instance = clazz.getDeclaredConstructor().newInstance();
+      Command commandInfo = clazz.getAnnotation(Command.class);
 
-    BukkitCommand command = new BukkitCommand(commandInfo.name()) {
-      @Override
-      public boolean execute(CommandSender sender, String label, String[] args) {
-        if (!canExecute(sender, commandInfo)) return true;
+      BukkitCommand command = new BukkitCommand(commandInfo.name()) {
+        @Override
+        public boolean execute(CommandSender sender, String label, String[] args) {
+          if (!canExecute(sender, commandInfo)) return true;
 
-        CommandContext context = new CommandContext(sender, args);
-        if (args.length > 0 && executeSubCommand(plugin, clazz, instance, context, args[0], commandInfo.async())) {
+          CommandContext context = new CommandContext(sender, args);
+          if (args.length > 0 && executeSubCommand(plugin, instance, context, args[0], commandInfo.async())) {
+            return true;
+          }
+
+          Method executeMethod = getExecuteMethod(clazz);
+          if (executeMethod != null) {
+            executeCommand(plugin, commandInfo.async(), () -> invokeMethod(executeMethod, instance, context));
+          } else {
+            context.sendMessage("&cInvalid usage! " + commandInfo.usage());
+          }
           return true;
         }
 
-        Method executeMethod = getExecuteMethod(clazz);
-        if (executeMethod != null) {
-          executeCommand(plugin, commandInfo.async(), () -> invokeMethod(executeMethod, instance, context));
-        } else {
-          context.sendMessage("&cInvalid command.");
+        @Override
+        public List<String> tabComplete(CommandSender sender, String alias, String[] args) {
+          if (args.length == 1) {
+            return getSubCommandCompletions(clazz, args[0]);
+          } else if (args.length > 1) {
+            return getTabCompleteOptions(clazz, args);
+          }
+          return Collections.emptyList();
         }
-        return true;
-      }
+      };
 
-      @Override
-      public List<String> tabComplete(CommandSender sender, String alias, String[] args) {
-        if (args.length == 1) {
-          return getSubCommandCompletions(clazz, args[0]);
-        } else if (args.length > 1) {
-          return getTabCompleteOptions(clazz, args);
-        }
-        return Collections.emptyList();
-      }
-    };
+      setCommandProperties(command, commandInfo);
+      commandMap.register(plugin.getName(), command);
+      commands.put(commandInfo.name(), command);
+      plugin.getLogger().info("[SANCF] Registered command: " + commandInfo.name());
 
-    setCommandProperties(command, commandInfo);
-    commandMap.register(plugin.getName(), command);
-    commands.put(commandInfo.name(), command);
-    plugin.getLogger().info("[SANCF] Registered command: " + commandInfo.name());
+    } catch (Exception e) {
+      plugin.getLogger().severe("[SANCF] Failed to register command: " + e.getMessage());
+      e.printStackTrace();
+    }
   }
 
   private static boolean canExecute(CommandSender sender, Command commandInfo) {
@@ -104,8 +92,8 @@ public class CommandManager {
     return true;
   }
 
-  private static boolean executeSubCommand(JavaPlugin plugin, Class<?> clazz, Object instance, CommandContext context, String subCommandName, boolean async) {
-    for (Method method : clazz.getDeclaredMethods()) {
+  private static boolean executeSubCommand(Plugin plugin, Object instance, CommandContext context, String subCommandName, boolean async) {
+    for (Method method : instance.getClass().getDeclaredMethods()) {
       if (method.isAnnotationPresent(SubCommand.class)) {
         SubCommand subCommand = method.getAnnotation(SubCommand.class);
         if (subCommand.name().equalsIgnoreCase(subCommandName)) {
@@ -166,13 +154,6 @@ public class CommandManager {
     }
   }
 
-  private static void setCommandProperties(BukkitCommand command, Command commandInfo) {
-    command.setDescription(commandInfo.description());
-    command.setPermission(commandInfo.permission());
-    command.setUsage(commandInfo.usage());
-    command.setAliases(Arrays.asList(commandInfo.aliases()));
-  }
-
   private static Method getExecuteMethod(Class<?> clazz) {
     try {
       return clazz.getMethod("execute", CommandContext.class);
@@ -190,11 +171,18 @@ public class CommandManager {
     }
   }
 
-  private static void executeCommand(JavaPlugin plugin, boolean async, Runnable task) {
+  private static void executeCommand(Plugin plugin, boolean async, Runnable task) {
     if (async) {
       Bukkit.getScheduler().runTaskAsynchronously(plugin, task);
     } else {
-      task.run();
+      Bukkit.getScheduler().runTask(plugin, task);
     }
+  }
+
+  private static void setCommandProperties(BukkitCommand command, Command commandInfo) {
+    command.setDescription(commandInfo.description());
+    command.setPermission(commandInfo.permission());
+    command.setUsage(commandInfo.usage());
+    command.setAliases(Arrays.asList(commandInfo.aliases()));
   }
 }
