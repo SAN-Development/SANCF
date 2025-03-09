@@ -8,6 +8,7 @@ import org.bukkit.Material;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.SimpleCommandMap;
 import org.bukkit.command.defaults.BukkitCommand;
+import org.bukkit.entity.Player;
 import org.bukkit.plugin.SimplePluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.reflections.Reflections;
@@ -28,8 +29,6 @@ public class CommandManager {
   public static void registerCommands(JavaPlugin plugin) {
     try {
       commandMap = getCommandMap();
-
-      // Use Reflections to find all classes annotated with @Command in the plugin's package
       Reflections reflections = new Reflections(new ConfigurationBuilder()
               .setUrls(ClasspathHelper.forPackage(plugin.getClass().getPackage().getName()))
               .setScanners(Scanners.TypesAnnotated));
@@ -46,10 +45,9 @@ public class CommandManager {
 
   private static SimpleCommandMap getCommandMap() throws Exception {
     if (commandMap == null) {
-      SimplePluginManager manager = (SimplePluginManager) Bukkit.getServer().getPluginManager();
       Field field = SimplePluginManager.class.getDeclaredField("commandMap");
       field.setAccessible(true);
-      commandMap = (SimpleCommandMap) field.get(manager);
+      commandMap = (SimpleCommandMap) field.get(Bukkit.getPluginManager());
     }
     return commandMap;
   }
@@ -95,7 +93,7 @@ public class CommandManager {
   }
 
   private static boolean canExecute(CommandSender sender, Command commandInfo) {
-    if (!commandInfo.allowConsole() && !(sender instanceof org.bukkit.entity.Player)) {
+    if (!commandInfo.allowConsole() && !(sender instanceof Player)) {
       sender.sendMessage("§cThis command can only be used by players.");
       return false;
     }
@@ -144,7 +142,7 @@ public class CommandManager {
     if (!subCommandMethod.isAnnotationPresent(TabComplete.class)) return Collections.emptyList();
 
     String[] options = subCommandMethod.getAnnotation(TabComplete.class).value();
-    int index = args.length - 2; // args[0] is subcommand name
+    int index = args.length - 2; // args[0] = subcommand
     if (index < 0 || index >= options.length) return Collections.emptyList();
 
     String option = options[index];
@@ -153,7 +151,7 @@ public class CommandManager {
     switch (option.toLowerCase()) {
       case "@players":
         return Bukkit.getOnlinePlayers().stream()
-                .map(player -> player.getName())
+                .map(Player::getName)
                 .filter(name -> name.toLowerCase().startsWith(input))
                 .collect(Collectors.toList());
       case "@items":
