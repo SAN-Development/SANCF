@@ -20,7 +20,7 @@
     <groupId>com.github.SAN-Development</groupId>
     <artifactId>SANCF</artifactId>
     <version>latest</version>
-</dependency>
+</dependency
 ```
 
 ### Gradle
